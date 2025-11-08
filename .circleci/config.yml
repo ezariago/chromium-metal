@@ -1,5 +1,8 @@
 version: 2.1
 
+orbs:
+  git-shallow-clone: guitarrapc/git-shallow-clone@2.8.0
+
 jobs:
   build-chromium-linux:
     machine:
@@ -7,7 +10,7 @@ jobs:
     resource_class: large
     working_directory: ~/project
     steps:
-      - run: git clone --depth 5 "$CIRCLE_REPOSITORY_URL" --branch "$CIRCLE_BRANCH"
+      - git-shallow-clone/checkout
       - run:
           name: Maximize Build Space
           command: |
