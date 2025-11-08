@@ -1,0 +1,116 @@
+name: Build Chromium on Linux
+
+on:
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+  # Triggers the workflow on push events but only for the "main" branch
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    
+    # Increase the job timeout to 8 hours (480 minutes). The default is 6 hours.
+    timeout-minutes: 480
+
+    steps:
+    - name: Maximize build space
+      uses: easimon/maximize-build-space@v10
+      with:
+        root-reserve-mb: 512
+        swap-size-mb: 1024
+        remove-dotnet: 'true'
+        remove-android: 'true'
+        remove-haskell: 'true'
+
+    - name: Checkout your repository
+      uses: actions/checkout@v4
+
+    - name: Cache depot_tools
+      id: cache-depot-tools
+      uses: actions/cache@v4
+      with:
+        path: depot_tools
+        key: ${{ runner.os }}-depot-tools
+
+    - name: Install depot_tools
+      if: steps.cache-depot-tools.outputs.cache-hit != 'true'
+      run: |
+        git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
+        
+    - name: Add depot_tools to PATH
+      run: |
+        echo "$(pwd)/depot_tools" >> $GITHUB_PATH
+
+    - name: Configure Git
+      run: |
+        git config --global user.name "GitHub Actions"
+        git config --global user.email "actions@github.com"
+        # Required to prevent errors during gclient sync
+        git config --global core.precomposeUnicode true
+        
+    - name: Fetch Chromium Source Code
+      run: |
+        # --no-history is CRITICAL to save disk space and time
+        fetch --nohooks --no-history chromium
+
+    - name: Change directory to src
+      run: cd src
+
+    - name: Install Build Dependencies
+      working-directory: ./src
+      run: |
+        sudo ./build/install-build-deps.sh --no-prompt --no-arm --no-chromeos-fonts
+
+    - name: Run GClient Hooks
+      working-directory: ./src
+      run: |
+        gclient runhooks
+
+    - name: Cache ccache
+      id: cache-ccache
+      uses: actions/cache@v4
+      with:
+        path: .ccache
+        key: ${{ runner.os }}-ccache-${{ github.sha }}
+        restore-keys: |
+          ${{ runner.os }}-ccache-
+
+    - name: Set up ccache
+      run: |
+        mkdir -p .ccache
+        echo "max_size = 10.0G" > .ccache/ccache.conf
+
+    - name: Setup GN Build
+      working-directory: ./src
+      run: |
+        # Configure the build for a CI environment:
+        # - is_debug=false: Release build (faster to link)
+        # - is_component_build=true: Links many small shared libraries instead of one giant executable. Much faster, uses less memory.
+        # - symbol_level=0: No debug symbols. Smaller, faster build.
+        # - cc_wrapper="ccache": Use ccache to speed up compilation.
+        gn gen out/Default --args='is_debug=false is_component_build=true symbol_level=0 cc_wrapper="ccache"'
+
+    - name: Build Chromium with autoninja
+      working-directory: ./src
+      run: |
+        # autoninja automatically selects the optimal number of jobs
+        autoninja -C out/Default chrome
+
+    - name: Upload Chromium Build Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: chromium-linux
+        # Uploading the entire output directory is too large.
+        # We will package the essential files needed to run chrome.
+        path: |
+          src/out/Default/chrome
+          src/out/Default/chrome_100_percent.pak
+          src/out/Default/chrome_200_percent.pak
+          src/out/Default/resources.pak
+          src/out/Default/icudtl.dat
+          src/out/Default/lib*.so
+          src/out/Default/locales/
+          src/out/Default/swiftshader/
+        if-no-files-found: error
