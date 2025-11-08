@@ -1,31 +1,142 @@
-# Use the latest 2.1 version of CircleCI pipeline process engine.
-# See: https://circleci.com/docs/reference/configuration-reference
 version: 2.1
 
-# Define a job to be invoked later in a workflow.
-# See: https://circleci.com/docs/guides/orchestrate/jobs-steps/#jobs-overview & https://circleci.com/docs/reference/configuration-reference/#jobs
 jobs:
-  say-hello:
-    # Specify the execution environment. You can specify an image from Docker Hub or use one of our convenience images from CircleCI's Developer Hub.
-    # See: https://circleci.com/docs/guides/execution-managed/executor-intro/ & https://circleci.com/docs/reference/configuration-reference/#executor-job
-    docker:
-      # Specify the version you desire here
-      # See: https://circleci.com/developer/images/image/cimg/base
-      - image: cimg/base:current
+  build-chromium-linux:
+    # CRITICAL: Use a machine executor with a large resource class.
+    # A standard 'docker' executor will fail due to disk space and memory limits.
+    # You may need to upgrade to 'xlarge' on a paid plan if 'large' is insufficient.
+    machine:
+      image: ubuntu-2204:2024.01.1
+    resource_class: 2x-large
+    
+    # Set the working directory for the job.
+    working_directory: ~/project
 
-    # Add steps to the job
-    # See: https://circleci.com/docs/guides/orchestrate/jobs-steps/#steps-overview & https://circleci.com/docs/reference/configuration-reference/#steps
+    # Set a long timeout for the entire job. The default is 10 minutes.
+    no_output_timeout: 8h
+
     steps:
-      # Checkout the code as the first step.
       - checkout
-      - run:
-          name: "Say hello"
-          command: "echo Hello, World!"
 
-# Orchestrate jobs using workflows
-# See: https://circleci.com/docs/guides/orchestrate/workflows/ & https://circleci.com/docs/reference/configuration-reference/#workflows
+      - run:
+          name: Maximize Build Space
+          command: |
+            echo "Removing large pre-installed tools to free up disk space..."
+            sudo rm -rf /usr/share/dotnet
+            sudo rm -rf /opt/ghc
+            sudo rm -rf "/usr/local/share/boost"
+            sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+            df -h
+
+      - restore_cache:
+          keys:
+            - depot-tools-v1
+
+      - run:
+          name: Install depot_tools
+          command: |
+            if [ ! -d "depot_tools" ]; then
+              git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
+            else
+              echo "depot_tools found in cache."
+            fi
+            
+      - save_cache:
+          key: depot-tools-v1
+          paths:
+            - depot_tools
+
+      - run:
+          name: Add depot_tools to PATH
+          # This command adds the path to BASH_ENV, which is sourced for subsequent steps.
+          command: |
+            echo 'export PATH=/home/circleci/project/depot_tools:$PATH' >> $BASH_ENV
+            source $BASH_ENV
+            
+      - run:
+          name: Configure Git
+          command: |
+            git config --global user.name "CircleCI"
+            git config --global user.email "ci@circleci.com"
+            git config --global core.precomposeUnicode true
+            
+      - run:
+          name: Fetch Chromium Source Code
+          # --no-history is CRITICAL to save disk space and time.
+          # We add a generous timeout to this long-running command.
+          command: |
+            timeout 180m fetch --nohooks --no-history chromium
+
+      - restore_cache:
+          keys:
+            # Tries to find a cache for the exact commit, then for the branch.
+            - ccache-v1-{{ .Branch }}-{{ .Revision }}
+            - ccache-v1-{{ .Branch }}-
+
+      - run:
+          name: Install Build Dependencies & Run Hooks
+          # Run commands from within the 'src' directory
+          working_directory: ~/project/src
+          command: |
+            echo "Installing system build dependencies..."
+            sudo ./build/install-build-deps.sh --no-prompt --no-arm --no-chromeos-fonts
+            
+            echo "Running gclient hooks..."
+            gclient runhooks
+
+      - run:
+          name: Set up ccache
+          command: |
+            mkdir -p ~/project/.ccache
+            echo "max_size = 15.0G" > ~/project/.ccache/ccache.conf
+
+      - run:
+          name: Setup GN Build
+          working_directory: ~/project/src
+          command: |
+            # Configure the build for a CI environment:
+            # - is_debug=false: Release build (faster to link)
+            # - is_component_build=true: Links many small shared libraries instead of one giant executable. Much faster, uses less memory.
+            # - symbol_level=0: No debug symbols. Smaller, faster build.
+            # - cc_wrapper="ccache": Use ccache to speed up compilation.
+            gn gen out/Default --args='is_debug=false is_component_build=true symbol_level=0 cc_wrapper="ccache"'
+            
+      - run:
+          name: Build Chromium with autoninja
+          working_directory: ~/project/src
+          command: |
+            # autoninja automatically selects the optimal number of jobs
+            autoninja -C out/Default chrome
+
+      - save_cache:
+          key: ccache-v1-{{ .Branch }}-{{ .Revision }}
+          paths:
+            - .ccache
+
+      - run:
+          name: Package Artifacts
+          command: |
+            mkdir -p artifacts
+            # Copy all essential files needed to run chrome into the artifacts directory.
+            cp src/out/Default/chrome artifacts/
+            cp src/out/Default/chrome_100_percent.pak artifacts/
+            cp src/out/Default/chrome_200_percent.pak artifacts/
+            cp src/out/Default/resources.pak artifacts/
+            cp src/out/Default/icudtl.dat artifacts/
+            cp -r src/out/Default/locales artifacts/
+            cp -r src/out/Default/swiftshader artifacts/
+            # Copy shared libraries if they exist (for component build)
+            find src/out/Default -maxdepth 1 -name "*.so" -exec cp {} artifacts/ \;
+
+      - store_artifacts:
+          path: artifacts
+
 workflows:
-  say-hello-workflow: # This is the name of the workflow, feel free to change it to better match your workflow.
-    # Inside the workflow, you define the jobs you want to run.
+  version: 2
+  build-chromium:
     jobs:
-      - say-hello
+      - build-chromium-linux:
+          filters:
+            branches:
+              only:
+                - main # Or your default branch
