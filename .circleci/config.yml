@@ -2,22 +2,12 @@ version: 2.1
 
 jobs:
   build-chromium-linux:
-    # CRITICAL: Use a machine executor with a large resource class.
-    # A standard 'docker' executor will fail due to disk space and memory limits.
-    # You may need to upgrade to 'xlarge' on a paid plan if 'large' is insufficient.
     machine:
       image: ubuntu-2204:2024.01.1
     resource_class: 2x-large
-    
-    # Set the working directory for the job.
     working_directory: ~/project
-
-    # Set a long timeout for the entire job. The default is 10 minutes.
-    no_output_timeout: 8h
-
     steps:
       - checkout
-
       - run:
           name: Maximize Build Space
           command: |
@@ -27,11 +17,9 @@ jobs:
             sudo rm -rf "/usr/local/share/boost"
             sudo rm -rf "$AGENT_TOOLSDIRECTORY"
             df -h
-
       - restore_cache:
           keys:
             - depot-tools-v1
-
       - run:
           name: Install depot_tools
           command: |
@@ -40,84 +28,60 @@ jobs:
             else
               echo "depot_tools found in cache."
             fi
-            
       - save_cache:
           key: depot-tools-v1
           paths:
             - depot_tools
-
       - run:
           name: Add depot_tools to PATH
-          # This command adds the path to BASH_ENV, which is sourced for subsequent steps.
           command: |
             echo 'export PATH=/home/circleci/project/depot_tools:$PATH' >> $BASH_ENV
             source $BASH_ENV
-            
       - run:
           name: Configure Git
           command: |
             git config --global user.name "CircleCI"
             git config --global user.email "ci@circleci.com"
             git config --global core.precomposeUnicode true
-            
       - run:
           name: Fetch Chromium Source Code
-          # --no-history is CRITICAL to save disk space and time.
-          # We add a generous timeout to this long-running command.
           command: |
             timeout 180m fetch --nohooks --no-history chromium
-
       - restore_cache:
           keys:
-            # Tries to find a cache for the exact commit, then for the branch.
             - ccache-v1-{{ .Branch }}-{{ .Revision }}
             - ccache-v1-{{ .Branch }}-
-
       - run:
           name: Install Build Dependencies & Run Hooks
-          # Run commands from within the 'src' directory
           working_directory: ~/project/src
           command: |
             echo "Installing system build dependencies..."
             sudo ./build/install-build-deps.sh --no-prompt --no-arm --no-chromeos-fonts
-            
             echo "Running gclient hooks..."
             gclient runhooks
-
       - run:
           name: Set up ccache
           command: |
             mkdir -p ~/project/.ccache
             echo "max_size = 15.0G" > ~/project/.ccache/ccache.conf
-
       - run:
           name: Setup GN Build
           working_directory: ~/project/src
           command: |
-            # Configure the build for a CI environment:
-            # - is_debug=false: Release build (faster to link)
-            # - is_component_build=true: Links many small shared libraries instead of one giant executable. Much faster, uses less memory.
-            # - symbol_level=0: No debug symbols. Smaller, faster build.
-            # - cc_wrapper="ccache": Use ccache to speed up compilation.
             gn gen out/Default --args='is_debug=false is_component_build=true symbol_level=0 cc_wrapper="ccache"'
-            
       - run:
           name: Build Chromium with autoninja
           working_directory: ~/project/src
           command: |
-            # autoninja automatically selects the optimal number of jobs
             autoninja -C out/Default chrome
-
       - save_cache:
           key: ccache-v1-{{ .Branch }}-{{ .Revision }}
           paths:
             - .ccache
-
       - run:
           name: Package Artifacts
           command: |
             mkdir -p artifacts
-            # Copy all essential files needed to run chrome into the artifacts directory.
             cp src/out/Default/chrome artifacts/
             cp src/out/Default/chrome_100_percent.pak artifacts/
             cp src/out/Default/chrome_200_percent.pak artifacts/
@@ -125,9 +89,7 @@ jobs:
             cp src/out/Default/icudtl.dat artifacts/
             cp -r src/out/Default/locales artifacts/
             cp -r src/out/Default/swiftshader artifacts/
-            # Copy shared libraries if they exist (for component build)
             find src/out/Default -maxdepth 1 -name "*.so" -exec cp {} artifacts/ \;
-
       - store_artifacts:
           path: artifacts
 
@@ -139,4 +101,4 @@ workflows:
           filters:
             branches:
               only:
-                - main # Or your default branch
+                - main
