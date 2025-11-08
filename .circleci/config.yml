@@ -10,7 +10,8 @@ jobs:
     resource_class: large
     working_directory: ~/project
     steps:
-      - git-shallow-clone/checkout
+      - checkout:
+          method: blobless
       - run:
           name: Maximize Build Space
           command: |
