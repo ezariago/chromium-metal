@@ -295,27 +295,8 @@ GpuPreferences ParseGpuPreferences(const base::CommandLine* command_line) {
 }
 
 GrContextType ParseGrContextType(const base::CommandLine* command_line) {
-  if (features::IsSkiaGraphiteEnabled(command_line)) {
-    [[maybe_unused]] auto value =
-        command_line->GetSwitchValueASCII(switches::kSkiaGraphiteBackend);
-#if BUILDFLAG(SKIA_USE_DAWN)
-    if (value.empty() ||
-        base::StartsWith(value, switches::kSkiaGraphiteBackendDawn)) {
-      return GrContextType::kGraphiteDawn;
-    }
-#endif  // BUILDFLAG(SKIA_USE_DAWN)
-#if BUILDFLAG(SKIA_USE_METAL)
-    if (value == switches::kSkiaGraphiteBackendMetal) {
-      return GrContextType::kGraphiteMetal;
-    }
-#endif  // BUILDFLAG(SKIA_USE_METAL)
-    LOG(ERROR) << "Skia Graphite backend = \"" << value
-               << "\" not found - falling back to Ganesh!";
-  }
-  if (features::IsUsingVulkan()) {
-    return GrContextType::kVulkan;
-  }
-  return GrContextType::kGL;
+    // Always use graphite metal as the backend
+    return GrContextType::kGraphiteMetal;
 }
 
 bool MSAAIsSlow(const GpuDriverBugWorkarounds& workarounds) {
