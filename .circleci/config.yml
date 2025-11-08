@@ -7,7 +7,7 @@ jobs:
     resource_class: large
     working_directory: ~/project
     steps:
-      - checkout
+      - run: git clone --depth 5 "$CIRCLE_REPOSITORY_URL" --branch "$CIRCLE_BRANCH"
       - run:
           name: Maximize Build Space
           command: |
