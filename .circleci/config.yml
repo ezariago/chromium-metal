@@ -4,7 +4,7 @@ jobs:
   build-chromium-linux:
     machine:
       image: ubuntu-2204:2024.01.1
-    resource_class: 2x-large
+    resource_class: xlarge
     working_directory: ~/project
     steps:
       - checkout
